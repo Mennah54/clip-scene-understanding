@@ -1,0 +1,49 @@
+project:
+  name: "CLIP Scene Understanding"
+  version: "1.0.0"
+  seed: 42
+
+model:
+  name: "ViT-B/32" # Options: ViT-B/32, ViT-L/14, RN50
+  device: "auto" # auto, cuda, cpu
+  batch_size: 64
+  cache_embeddings: true
+
+data:
+  dataset: "cifar100" # cifar100, imagenet_subset, coco
+  data_root: "data/raw"
+  processed_root: "data/processed"
+  embeddings_root: "data/embeddings"
+  num_classes: 100
+  max_samples: 5000
+
+inference:
+  top_k: 5
+  similarity_threshold: 0.2
+  use_prompt_ensemble: true
+
+prompts:
+  strategy: "ensemble" # single, template, ensemble
+  templates:
+    - "a photo of a {label}"
+    - "a photograph of a {label}"
+    - "an image of a {label}"
+    - "a picture of a {label}"
+    - "a {label} in a natural setting"
+    - "a clear photo of a {label}"
+    - "a high quality photo of a {label}"
+    - "a rendering of a {label}"
+
+retrieval:
+  index_type: "FlatIP" # FlatIP, IVFFlat, HNSW
+  top_k: 10
+
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "top5_accuracy"]
+  benchmark_runs: 3
+
+output:
+  figures_dir: "outputs/figures"
+  reports_dir: "outputs/reports"
+  results_dir: "outputs/results"
+  logs_dir: "outputs/logs"
