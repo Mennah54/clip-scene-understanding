@@ -12,18 +12,43 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="CLIP Scene Understanding",
-                   page_icon="", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="CLIP Scene Understanding",
+    page_icon="",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.markdown("""
 <style>
-.main-header{font-size:2rem;font-weight:800;
-  background:linear-gradient(135deg,#667eea,#764ba2);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-  text-align:center;margin-bottom:.3rem;}
-.sub-header{text-align:center;color:#888;font-size:.95rem;margin-bottom:1.5rem;}
-</style>""", unsafe_allow_html=True)
+.main-header {
+    font-size: 2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+    margin-bottom: .3rem;
+}
+.sub-header {
+    text-align: center;
+    color: #888;
+    font-size: .95rem;
+    margin-bottom: 1.5rem;
+}
+.result-label {
+    text-align: center;
+    font-weight: bold;
+    font-size: .9rem;
+    margin-top: 4px;
+}
+.result-score {
+    text-align: center;
+    color: #2ecc71;
+    font-size: .8rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
 CIFAR100 = [
     "apple","aquarium fish","baby","bear","beaver","bed","bee","beetle",
@@ -43,7 +68,7 @@ CIFAR100 = [
     "woman","worm",
 ]
 
-# ── Load CLIP ──────────────────────────────────────────
+# ── Load CLIP ──────────────────────────────────────────────────────
 @st.cache_resource
 def load_model(name):
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,23 +76,34 @@ def load_model(name):
     m.eval()
     return m, p, dev
 
-# ── Build index FROM DISK (no internet needed) ─────────
+# ── Build FAISS index from disk ────────────────────────────────────
 @st.cache_resource
 def build_index(_model, _preprocess, device, corpus_dir="data/corpus"):
-    files = sorted(glob.glob(f"{corpus_dir}/*.jpg") +
-                   glob.glob(f"{corpus_dir}/*.png"))
+    files = sorted(
+        glob.glob(f"{corpus_dir}/*.jpg") +
+        glob.glob(f"{corpus_dir}/*.png")
+    )
 
     if not files:
         return None, [], [], None
 
     images, labels = [], []
+    bad = []
+
     for fpath in files:
         try:
             img = Image.open(fpath).convert("RGB")
+            # Verify it is a real image
+            if img.size[0] < 8 or img.size[1] < 8:
+                bad.append(fpath)
+                continue
             images.append(img)
-            labels.append(Path(fpath).stem)   # filename without extension
-        except Exception as e:
-            st.warning(f"Could not load {fpath}: {e}")
+            # Label = filename without index suffix  e.g. "cat_0" → "cat"
+            stem = Path(fpath).stem
+            label = "_".join(stem.split("_")[:-1]) if stem[-1].isdigit() else stem
+            labels.append(label)
+        except Exception:
+            bad.append(fpath)
 
     if not images:
         return None, [], [], None
@@ -83,10 +119,12 @@ def build_index(_model, _preprocess, device, corpus_dir="data/corpus"):
 
     return idx, images, labels, embs
 
-# ── Sidebar ────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("###  Configuration")
-    model_name   = st.selectbox("CLIP Model", ["ViT-B/32","ViT-B/16","RN50"])
+    model_name   = st.selectbox("CLIP Model", ["ViT-B/32", "ViT-B/16", "RN50"])
     use_ensemble = st.checkbox("Prompt Ensemble", value=True)
     top_k        = st.slider("Top-K Predictions", 3, 10, 5)
     st.markdown("---")
@@ -95,14 +133,23 @@ with st.sidebar:
 model, preprocess, device = load_model(model_name)
 
 with st.sidebar:
-    st.json({"model_name":model_name,"device":device,
-             "embed_dim":512,"total_params_M":151.3,"image_resolution":224})
+    st.json({
+        "model_name":       model_name,
+        "device":           device,
+        "embed_dim":        512,
+        "total_params_M":   151.3,
+        "image_resolution": 224,
+    })
 
-# ── Header ─────────────────────────────────────────────
-st.markdown('<h1 class="main-header"> CLIP Scene Understanding System</h1>',
-            unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Zero-Shot Visual Classification & Semantic Retrieval using OpenAI CLIP</p>',
-            unsafe_allow_html=True)
+# ── Header ─────────────────────────────────────────────────────────
+st.markdown(
+    '<h1 class="main-header"> CLIP Scene Understanding System</h1>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<p class="sub-header">Zero-Shot Visual Classification & Semantic Retrieval using OpenAI CLIP</p>',
+    unsafe_allow_html=True,
+)
 
 tab1, tab2, tab3, tab4 = st.tabs([
     " Zero-Shot Classification",
@@ -111,29 +158,46 @@ tab1, tab2, tab3, tab4 = st.tabs([
     " Benchmarks",
 ])
 
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 #  TAB 1 — ZERO-SHOT CLASSIFICATION
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 with tab1:
     c1, c2 = st.columns(2)
+
     with c1:
         st.markdown("###  Upload Image")
-        uploaded = st.file_uploader("Choose an image",
-                                    type=["jpg","jpeg","png","webp"])
-        custom   = st.text_area("Custom Classes (one per line)",
-                                height=100, placeholder="dog\ncat\nbird\n...")
+        uploaded = st.file_uploader(
+            "Choose an image", type=["jpg", "jpeg", "png", "webp"]
+        )
+        custom = st.text_area(
+            "Custom Classes (one per line — leave empty for CIFAR-100)",
+            height=100,
+            placeholder="dog\ncat\nbird\n...",
+        )
+
     with c2:
         if uploaded:
             image = Image.open(uploaded).convert("RGB")
-            st.image(image, caption="Input Image", use_column_width=True)
+            st.image(image, caption="Input Image", width=350)
 
-    if uploaded and st.button(" Classify", type="primary"):
-        classes   = ([c.strip() for c in custom.strip().split("\n") if c.strip()]
-                     if custom.strip() else CIFAR100)
-        templates = (["a photo of a {}","a photograph of a {}",
-                       "an image of a {}","a picture of a {}",
-                       "a high quality photo of a {}"]
-                     if use_ensemble else ["a photo of a {}"])
+    if uploaded and st.button("🚀 Classify", type="primary"):
+        classes = (
+            [c.strip() for c in custom.strip().split("\n") if c.strip()]
+            if custom.strip()
+            else CIFAR100
+        )
+
+        templates = (
+            [
+                "a photo of a {}",
+                "a photograph of a {}",
+                "an image of a {}",
+                "a picture of a {}",
+                "a high quality photo of a {}",
+            ]
+            if use_ensemble
+            else ["a photo of a {}"]
+        )
 
         with st.spinner("Running CLIP inference..."):
             t0 = time.time()
@@ -159,25 +223,32 @@ with tab1:
             top_idx  = int(np.argmax(probs))
             topk_idx = np.argsort(probs)[::-1][:top_k]
 
-        st.success(f" **{classes[top_idx].upper()}** — "
-                   f"{probs[top_idx]:.1%} confidence | {elapsed*1000:.0f} ms")
+        st.success(
+            f" **{classes[top_idx].upper()}** — "
+            f"{probs[top_idx]:.1%} confidence | {elapsed*1000:.0f} ms"
+        )
 
         fig = go.Figure(go.Bar(
             y=[classes[i] for i in reversed(topk_idx)],
             x=[float(probs[i]) for i in reversed(topk_idx)],
             orientation="h",
-            marker=dict(color=[float(probs[i]) for i in reversed(topk_idx)],
-                        colorscale="Viridis"),
+            marker=dict(
+                color=[float(probs[i]) for i in reversed(topk_idx)],
+                colorscale="Viridis",
+            ),
             text=[f"{probs[i]:.1%}" for i in reversed(topk_idx)],
             textposition="outside",
         ))
-        fig.update_layout(xaxis=dict(range=[0,1.2]),
-                          height=350, margin=dict(l=10,r=10,t=30,b=10))
+        fig.update_layout(
+            xaxis=dict(range=[0, 1.2]),
+            height=350,
+            margin=dict(l=10, r=10, t=30, b=10),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 #  TAB 2 — SEMANTIC RETRIEVAL
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 with tab2:
     st.markdown("###  Text-to-Image Semantic Search")
 
@@ -185,15 +256,19 @@ with tab2:
         build_index(model, preprocess, device)
 
     if faiss_index is None:
-        st.error(" No images found in data/corpus/. Run the download cell first.")
-        st.code("# In a Colab cell run:\nimport os; print(os.listdir('data/corpus'))")
+        st.error("No images found in data/corpus/ — run the CIFAR-100 download cell first.")
     else:
-        st.success(f" {faiss_index.ntotal} images indexed | FAISS FlatIP | {model_name}")
-        st.caption(f"Classes: {', '.join(corpus_lbls)}")
+        unique_classes = sorted(set(corpus_lbls))
+        st.success(
+            f" {faiss_index.ntotal} images indexed across "
+            f"{len(unique_classes)} classes | FAISS FlatIP | {model_name}"
+        )
 
-        query = st.text_input("Enter a text query",
-                              placeholder="a dog playing in the snow")
-        ret_k = st.slider("Results to show", 1, min(8,len(corpus_imgs)), 4)
+        query = st.text_input(
+            "Enter a text query",
+            placeholder="a dog playing in the snow",
+        )
+        ret_k = st.slider("Results to show", 1, min(12, len(corpus_imgs)), 6)
 
         if st.button(" Search", type="primary") and query.strip():
             with st.spinner("Searching..."):
@@ -210,45 +285,69 @@ with tab2:
             st.markdown(f"**Results for:** *'{query}'* — {elapsed*1000:.0f} ms")
             st.markdown("---")
 
-            cols = st.columns(ret_k)
-            for col, idx, score in zip(cols, idxs[0], scores[0]):
+            cols = st.columns(min(ret_k, 6))
+            for i, (idx, score) in enumerate(zip(idxs[0], scores[0])):
                 if 0 <= idx < len(corpus_imgs):
+                    col = cols[i % len(cols)]
                     with col:
-                        st.image(corpus_imgs[idx], use_column_width=True)
+                        st.image(corpus_imgs[idx], width=180)
                         st.markdown(
-                            f"<div style='text-align:center'>"
-                            f"<b>{corpus_lbls[idx]}</b><br>"
-                            f"<span style='color:#2ecc71;font-size:.85rem'>"
-                            f"sim: {score:.3f}</span></div>",
-                            unsafe_allow_html=True)
+                            f'<p class="result-label">{corpus_lbls[idx]}</p>'
+                            f'<p class="result-score">sim: {score:.3f}</p>',
+                            unsafe_allow_html=True,
+                        )
 
+            # Similarity bar chart
+            valid = [(corpus_lbls[i], float(s))
+                     for i, s in zip(idxs[0], scores[0])
+                     if 0 <= i < len(corpus_lbls)]
             fig = go.Figure(go.Bar(
-                x=[corpus_lbls[i] for i in idxs[0] if 0<=i<len(corpus_lbls)],
-                y=[float(s) for s in scores[0]],
-                marker=dict(color=[float(s) for s in scores[0]],
-                            colorscale="Viridis"),
-                text=[f"{s:.3f}" for s in scores[0]],
+                x=[v[0] for v in valid],
+                y=[v[1] for v in valid],
+                marker=dict(
+                    color=[v[1] for v in valid],
+                    colorscale="Viridis",
+                ),
+                text=[f"{v[1]:.3f}" for v in valid],
                 textposition="outside",
             ))
             fig.update_layout(
-                yaxis=dict(range=[0,1.1], title="Cosine Similarity"),
-                height=280, margin=dict(l=10,r=10,t=20,b=10))
+                yaxis=dict(range=[0, 1.1], title="Cosine Similarity"),
+                height=280,
+                margin=dict(l=10, r=10, t=20, b=10),
+            )
             st.plotly_chart(fig, use_container_width=True)
 
         else:
+            # Show corpus preview — no use_column_width warning
             st.markdown("####  Indexed Image Corpus")
-            n_cols = min(6, len(corpus_imgs))
-            cols   = st.columns(n_cols)
-            for i, (img, lbl) in enumerate(zip(corpus_imgs, corpus_lbls)):
-                cols[i % n_cols].image(img, caption=lbl, use_column_width=True)
+            st.caption(f"{faiss_index.ntotal} images — {len(unique_classes)} classes")
 
-# ══════════════════════════════════════════════════════
+            # Show one representative image per class
+            shown = {}
+            preview_imgs, preview_lbls = [], []
+            for img, lbl in zip(corpus_imgs, corpus_lbls):
+                if lbl not in shown:
+                    shown[lbl] = True
+                    preview_imgs.append(img)
+                    preview_lbls.append(lbl)
+
+            cols = st.columns(6)
+            for i, (img, lbl) in enumerate(zip(preview_imgs, preview_lbls)):
+                with cols[i % 6]:
+                    st.image(img, width=160)
+                    st.markdown(
+                        f'<p class="result-label">{lbl}</p>',
+                        unsafe_allow_html=True,
+                    )
+
+# ══════════════════════════════════════════════════════════════════
 #  TAB 3 — EMBEDDING VISUALIZATION
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("###  Embedding Space Visualization")
-    method = st.radio("Method", ["t-SNE","PCA"], horizontal=True)
-    n_cls  = st.slider("Classes", 5, 20, 10)
+    method = st.radio("Method", ["t-SNE", "PCA"], horizontal=True)
+    n_cls  = st.slider("Classes to visualize", 5, 20, 10)
 
     if st.button("Generate"):
         sel   = CIFAR100[:n_cls]
@@ -261,36 +360,43 @@ with tab3:
                 fe  /= fe.norm(dim=-1, keepdim=True)
                 embs = fe.cpu().numpy()
 
-            embs_r = np.tile(embs,(5,1)) + np.random.randn(n_cls*5,512)*.05
+            embs_r = np.tile(embs, (5, 1)) + np.random.randn(n_cls * 5, 512) * .05
             labs_r = sel * 5
 
             if method == "t-SNE":
-                r = TSNE(n_components=2,
-                         perplexity=min(15,len(embs_r)-1),
-                         random_state=42, init="pca",
-                         learning_rate="auto").fit_transform(embs_r)
+                r = TSNE(
+                    n_components=2,
+                    perplexity=min(15, len(embs_r) - 1),
+                    random_state=42,
+                    init="pca",
+                    learning_rate="auto",
+                ).fit_transform(embs_r)
             else:
                 r = PCA(n_components=2).fit_transform(embs_r)
 
         fig = go.Figure()
         for i, lbl in enumerate(sel):
-            mask = [l==lbl for l in labs_r]
+            mask = [l == lbl for l in labs_r]
             fig.add_trace(go.Scatter(
-                x=r[mask,0], y=r[mask,1],
-                mode="markers+text", name=lbl,
-                marker=dict(size=8,
-                            color=f"hsl({int(i*360/n_cls)},70%,55%)"),
-                text=[lbl]*sum(mask),
+                x=r[mask, 0],
+                y=r[mask, 1],
+                mode="markers+text",
+                name=lbl,
+                marker=dict(size=8, color=f"hsl({int(i*360/n_cls)},70%,55%)"),
+                text=[lbl] * sum(mask),
                 textposition="top center",
                 textfont=dict(size=9),
             ))
-        fig.update_layout(height=520, title=f"CLIP Embeddings — {method}",
-                          margin=dict(l=10,r=10,t=40,b=10))
+        fig.update_layout(
+            height=520,
+            title=f"CLIP Text Embeddings — {method}",
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 #  TAB 4 — BENCHMARKS
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 with tab4:
     st.markdown("### ⚡ Performance Benchmarks")
     c1, c2, c3 = st.columns(3)
@@ -298,12 +404,16 @@ with tab4:
     c2.metric("Device",    device.upper())
     c3.metric("Embed Dim", 512)
 
-    st.markdown("#### Speed (ViT-B/32)")
-    st.table({"Config":["CPU b=1","CPU b=32","GPU T4 b=64","GPU A100 b=64"],
-              "Throughput":["~8 img/s","~45 img/s","~380 img/s","~1200 img/s"],
-              "Latency":["125ms","22ms/img","2.6ms/img","0.8ms/img"]})
+    st.markdown("#### Throughput — ViT-B/32")
+    st.table({
+        "Config":     ["CPU b=1", "CPU b=32", "GPU T4 b=64", "GPU A100 b=64"],
+        "Throughput": ["~8 img/s", "~45 img/s", "~380 img/s", "~1200 img/s"],
+        "Latency":    ["125ms", "22ms/img", "2.6ms/img", "0.8ms/img"],
+    })
 
     st.markdown("#### Accuracy vs Baselines")
-    st.table({"Method":["Random","KNN pixels","ResNet-50","CLIP zero-shot","CLIP+probe"],
-              "CIFAR-100 Top1":["1.0%","18.3%","79.1%","68.4%","74.2%"],
-              "Labels needed":["0","5k","50k","0 ✓","5k"]})
+    st.table({
+        "Method":          ["Random", "KNN pixels", "ResNet-50", "CLIP zero-shot", "CLIP + probe"],
+        "CIFAR-100 Top-1": ["1.0%", "18.3%", "79.1%", "68.4%", "74.2%"],
+        "Labels needed":   ["0", "5k", "50k", "0 ✓", "5k"],
+    })
