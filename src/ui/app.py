@@ -246,7 +246,7 @@ with tab2:
 #  TAB 3 — EMBEDDING VISUALIZATION
 # ══════════════════════════════════════════════════════
 with tab3:
-    st.markdown("### 📊 Embedding Space Visualization")
+    st.markdown("###  Embedding Space Visualization")
     method = st.radio("Method", ["t-SNE","PCA"], horizontal=True)
     n_cls  = st.slider("Classes", 5, 20, 10)
 
