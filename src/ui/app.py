@@ -398,7 +398,7 @@ with tab3:
 #  TAB 4 — BENCHMARKS
 # ══════════════════════════════════════════════════════════════════
 with tab4:
-    st.markdown("### ⚡ Performance Benchmarks")
+    st.markdown("###  Performance Benchmarks")
     c1, c2, c3 = st.columns(3)
     c1.metric("Model",     model_name)
     c2.metric("Device",    device.upper())
